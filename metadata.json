@@ -1,0 +1,6 @@
+{
+  "name": "ALFA GLAZING",
+  "description": "Contractor management app for ALFA GLAZING to manage employee attendance sheets, salary sheets, daily wages, and advance payments.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
