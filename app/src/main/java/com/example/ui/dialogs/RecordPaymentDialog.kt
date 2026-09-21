@@ -479,7 +479,7 @@ fun RecordPaymentDialog(
             ) {
                 Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Save to Firestore", fontWeight = FontWeight.Bold)
+                Text("Save Data", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

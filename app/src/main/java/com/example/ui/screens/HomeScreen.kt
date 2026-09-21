@@ -31,11 +31,13 @@ import com.example.ui.components.AttendancePunchInCard
 import com.example.ui.components.EmployeeOneTapPunchCard
 import com.example.ui.components.RealtimeAttendanceFeedCard
 import com.example.ui.dialogs.EmployeeSalaryHistoryDialog
+import com.example.ui.dialogs.ExportReportDialog
 import com.example.ui.dialogs.RoleStatusBanner
 import com.example.ui.dialogs.RoleSwitchDialog
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AlfaGlazingUiState
 import com.example.ui.viewmodel.AlfaGlazingViewModel
+import com.example.util.CsvExportUtil
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -52,6 +54,8 @@ fun HomeScreen(
 ) {
     var showRoleDialog by remember { mutableStateOf(false) }
     var selectedHistoryEmp by remember { mutableStateOf<EmployeeEntity?>(null) }
+    var showExportSalaryDialog by remember { mutableStateOf(false) }
+    var showExportAttendanceDialog by remember { mutableStateOf(false) }
 
     val dateStr = uiState.selectedDate
     val todayAttendance = uiState.allAttendance.filter { it.dateString == dateStr }
@@ -79,6 +83,44 @@ fun HomeScreen(
             uiState = uiState,
             viewModel = viewModel,
             onDismiss = { selectedHistoryEmp = null }
+        )
+    }
+
+    if (showExportAttendanceDialog) {
+        val currentMonthStr = uiState.selectedMonth
+        val csvData = CsvExportUtil.generateMonthlyAttendanceCsv(
+            monthStr = currentMonthStr,
+            companyName = uiState.companyProfile.companyName,
+            employees = uiState.employees,
+            attendanceList = uiState.allAttendance
+        )
+        val csvFileName = "AlfaGlazing_AttendanceReport_${currentMonthStr.replace("-", "_")}.csv"
+
+        ExportReportDialog(
+            title = "Attendance Sheet ($currentMonthStr)",
+            reportText = "📋 Monthly Attendance Report for $currentMonthStr\nTotal Employees: ${uiState.employees.size}",
+            csvContent = csvData,
+            csvFileName = csvFileName,
+            onDismiss = { showExportAttendanceDialog = false }
+        )
+    }
+
+    if (showExportSalaryDialog) {
+        val currentMonthStr = uiState.selectedMonth
+        val csvData = CsvExportUtil.generateMonthlySalaryCsv(
+            monthStr = currentMonthStr,
+            companyName = uiState.companyProfile.companyName,
+            currencySymbol = uiState.companyProfile.currencySymbol,
+            salarySummaries = monthlySalarySummaries
+        )
+        val csvFileName = "AlfaGlazing_SalaryReport_${currentMonthStr.replace("-", "_")}.csv"
+
+        ExportReportDialog(
+            title = "Monthly Salary Sheet ($currentMonthStr)",
+            reportText = "💰 Monthly Salary Report for $currentMonthStr\nTotal Employees: ${monthlySalarySummaries.size}\nTotal Net Payable: ${uiState.companyProfile.currencySymbol}${totalMonthlyPayroll.toInt()}",
+            csvContent = csvData,
+            csvFileName = csvFileName,
+            onDismiss = { showExportSalaryDialog = false }
         )
     }
 
@@ -408,8 +450,20 @@ fun HomeScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
                         }
-                        TextButton(onClick = onNavigateToAttendance) {
-                            Text("Open Sheet >", fontWeight = FontWeight.Bold)
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { showExportAttendanceDialog = true },
+                                modifier = Modifier.size(36.dp).testTag("home_export_attendance_csv_btn")
+                            ) {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "Export Attendance CSV",
+                                    tint = PresentGreen
+                                )
+                            }
+                            TextButton(onClick = onNavigateToAttendance) {
+                                Text("Open Sheet >", fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
 
@@ -477,11 +531,32 @@ fun HomeScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    Text(
-                        text = "Monthly Financial Sheet Summary (${uiState.selectedMonth})",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Monthly Payroll Sheet (${uiState.selectedMonth})",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { showExportSalaryDialog = true },
+                                modifier = Modifier.size(36.dp).testTag("home_export_salary_csv_btn")
+                            ) {
+                                Icon(
+                                    Icons.Default.Download,
+                                    contentDescription = "Export Salary CSV",
+                                    tint = GlazingBluePrimary
+                                )
+                            }
+                            TextButton(onClick = onNavigateToSalarySheet) {
+                                Text("Open Sheet >", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                    }
 
                     Spacer(modifier = Modifier.height(12.dp))
 
@@ -595,7 +670,7 @@ fun HomeScreen(
                             Spacer(modifier = Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Firestore 'payments' Portal",
+                                    text = "Payments Portal",
                                     style = MaterialTheme.typography.titleSmall,
                                     fontWeight = FontWeight.Bold
                                 )

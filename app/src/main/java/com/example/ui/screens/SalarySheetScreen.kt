@@ -334,9 +334,19 @@ fun SalarySheetScreen(
             sb.append("   -> NET PAYABLE: $currency${s.netSalaryPayable.toInt()} [Status: ${s.paymentStatus}]\n\n")
         }
 
+        val csvData = com.example.util.CsvExportUtil.generateMonthlySalaryCsv(
+            monthStr = monthStr,
+            companyName = uiState.companyProfile.companyName,
+            currencySymbol = currency,
+            salarySummaries = salarySummaries
+        )
+        val csvFileName = "AlfaGlazing_SalaryReport_${monthStr.replace("-", "_")}.csv"
+
         ExportReportDialog(
             title = "Monthly Salary Sheet ($monthStr)",
             reportText = sb.toString(),
+            csvContent = csvData,
+            csvFileName = csvFileName,
             onDismiss = { showExportDialog = false }
         )
     }

@@ -6,8 +6,6 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
@@ -28,20 +26,10 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.credentials.CredentialManager
-import androidx.credentials.GetCredentialRequest
-import androidx.credentials.exceptions.GetCredentialException
 import com.example.ui.theme.AlfaGlazingTheme
 import com.example.ui.theme.GlazingBluePrimary
-import com.google.android.libraries.identity.googleid.GetGoogleIdOption
-import com.google.android.libraries.identity.googleid.GoogleIdTokenCredential
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.GoogleAuthProvider
-import kotlinx.coroutines.launch
 
 class SignInActivity : ComponentActivity() {
-
-    private val auth: FirebaseAuth by lazy { FirebaseAuth.getInstance() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -50,7 +38,6 @@ class SignInActivity : ComponentActivity() {
         setContent {
             AlfaGlazingTheme {
                 SignInContent(
-                    auth = auth,
                     onSuccessSignIn = { role, email, phone ->
                         val intent = Intent(this, MainActivity::class.java).apply {
                             putExtra("SIGNED_IN_ROLE", role)
@@ -70,11 +57,9 @@ class SignInActivity : ComponentActivity() {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SignInContent(
-    auth: FirebaseAuth,
     onSuccessSignIn: (role: String, email: String, phone: String) -> Unit
 ) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
 
     var selectedRole by remember { mutableStateOf("ADMIN") } // "ADMIN" or "VIEWER"
     var emailInput by remember { mutableStateOf("") }
@@ -84,38 +69,28 @@ fun SignInContent(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
-    val currentUser = auth.currentUser
-
-    LaunchedEffect(currentUser) {
-        if (currentUser != null && currentUser.email != null) {
-            emailInput = currentUser.email ?: ""
-        }
-    }
-
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background
     ) { innerPadding ->
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(innerPadding),
+                .padding(innerPadding)
+                .padding(24.dp),
             contentAlignment = Alignment.Center
         ) {
             Card(
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
                 shape = RoundedCornerShape(24.dp),
-                elevation = CardDefaults.cardElevation(4.dp),
+                elevation = CardDefaults.cardElevation(defaultElevation = 6.dp),
                 modifier = Modifier
-                    .fillMaxWidth(0.92f)
-                    .padding(16.dp)
+                    .fillMaxWidth()
+                    .widthIn(max = 440.dp)
             ) {
                 Column(
-                    modifier = Modifier
-                        .padding(24.dp)
-                        .fillMaxWidth(),
+                    modifier = Modifier.padding(24.dp),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    // App Logo Header
                     Box(
                         modifier = Modifier
                             .size(64.dp)
@@ -279,24 +254,17 @@ fun SignInContent(
                             }
 
                             isLoading = true
-                            if (emailInput.isNotBlank() && passwordInput.isNotBlank()) {
-                                auth.signInWithEmailAndPassword(emailInput, passwordInput)
-                                    .addOnCompleteListener { task ->
-                                        isLoading = false
-                                        if (task.isSuccessful) {
-                                            val email = auth.currentUser?.email ?: emailInput
-                                            Toast.makeText(context, "Signed in successfully as $selectedRole!", Toast.LENGTH_SHORT).show()
-                                            onSuccessSignIn(selectedRole, email, phoneInput)
-                                        } else {
-                                            // Fallback for demo sign-in
-                                            onSuccessSignIn(selectedRole, emailInput, phoneInput)
-                                        }
-                                    }
+                            val resolvedEmail = if (emailInput.isNotBlank()) {
+                                emailInput.trim()
+                            } else if (selectedRole == "ADMIN") {
+                                "admin@alfaglazing.com"
                             } else {
-                                isLoading = false
-                                val defaultEmail = if (emailInput.isNotBlank()) emailInput else if (selectedRole == "ADMIN") "admin@alfaglazing.com" else "worker@alfaglazing.com"
-                                onSuccessSignIn(selectedRole, defaultEmail, phoneInput)
+                                "worker@alfaglazing.com"
                             }
+
+                            Toast.makeText(context, "Signed in successfully as $selectedRole!", Toast.LENGTH_SHORT).show()
+                            isLoading = false
+                            onSuccessSignIn(selectedRole, resolvedEmail, phoneInput.trim())
                         },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
@@ -317,52 +285,23 @@ fun SignInContent(
 
                     Spacer(modifier = Modifier.height(12.dp))
 
-                    // Google Sign-In Button
+                    // Quick Guest / Demo Access Button
                     OutlinedButton(
                         onClick = {
-                            scope.launch {
-                                try {
-                                    val credentialManager = CredentialManager.create(context)
-                                    val googleIdOption = GetGoogleIdOption.Builder()
-                                        .setFilterByAuthorizedAccounts(false)
-                                        .setServerClientId("dummy-client-id.apps.googleusercontent.com")
-                                        .build()
-
-                                    val request = GetCredentialRequest.Builder()
-                                        .addCredentialOption(googleIdOption)
-                                        .build()
-
-                                    val result = credentialManager.getCredential(context = context, request = request)
-                                    val credential = result.credential
-                                    if (credential is GoogleIdTokenCredential) {
-                                        val idToken = credential.idToken
-                                        val firebaseCredential = GoogleAuthProvider.getCredential(idToken, null)
-                                        auth.signInWithCredential(firebaseCredential)
-                                            .addOnCompleteListener { task ->
-                                                if (task.isSuccessful) {
-                                                    val userEmail = auth.currentUser?.email ?: "googleuser@alfaglazing.com"
-                                                    onSuccessSignIn(selectedRole, userEmail, phoneInput)
-                                                } else {
-                                                    onSuccessSignIn(selectedRole, "googleuser@alfaglazing.com", phoneInput)
-                                                }
-                                            }
-                                    }
-                                } catch (e: Exception) {
-                                    // Direct fallback for emulator / dev environment without Google Play Services OAuth configured
-                                    onSuccessSignIn(selectedRole, "admin@alfaglazing.com", phoneInput)
-                                }
-                            }
+                            val defaultEmail = if (selectedRole == "ADMIN") "admin@alfaglazing.com" else "worker@alfaglazing.com"
+                            Toast.makeText(context, "Instant access as $selectedRole", Toast.LENGTH_SHORT).show()
+                            onSuccessSignIn(selectedRole, defaultEmail, phoneInput.trim())
                         },
                         shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(50.dp)
-                            .testTag("google_signin_btn")
+                            .testTag("quick_access_btn")
                     ) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.Default.AccountCircle, contentDescription = null, tint = GlazingBluePrimary)
                             Spacer(modifier = Modifier.width(8.dp))
-                            Text("Sign In with Google", fontWeight = FontWeight.Bold)
+                            Text("Continue as $selectedRole", fontWeight = FontWeight.Bold)
                         }
                     }
                 }

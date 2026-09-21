@@ -231,9 +231,9 @@ fun AttendanceScreen(
                         shape = RoundedCornerShape(8.dp),
                         modifier = Modifier.testTag("export_attendance_btn")
                     ) {
-                        Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(Icons.Default.TableChart, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Share", fontSize = 12.sp)
+                        Text("Export", fontSize = 12.sp)
                     }
                 }
 
@@ -314,12 +314,13 @@ fun AttendanceScreen(
     }
 
     if (showExportDialog) {
+        val currentMonthStr = dateStr.substring(0, 7.coerceAtMost(dateStr.length))
         val reportBuilder = StringBuilder()
         reportBuilder.append("📋 ALFA GLAZING ATTENDANCE SHEET\n")
-        reportBuilder.append("Date: $dateStr\n")
+        reportBuilder.append("Date: $dateStr | Month: $currentMonthStr\n")
         reportBuilder.append("-----------------------------------\n")
         reportBuilder.append("Total Workers: ${filteredEmployees.size}\n")
-        reportBuilder.append("Present: $presentCount | Half Day: $halfDayCount | Absent: $absentCount\n")
+        reportBuilder.append("Today Present: $presentCount | Half Day: $halfDayCount | Absent: $absentCount\n")
         reportBuilder.append("Total Overtime: ${totalOtHours} hrs\n")
         reportBuilder.append("-----------------------------------\n\n")
 
@@ -330,9 +331,19 @@ fun AttendanceScreen(
             reportBuilder.append("${index + 1}. ${emp.name} (${emp.employeeCode}): $statusStr$otStr\n")
         }
 
+        val csvData = com.example.util.CsvExportUtil.generateMonthlyAttendanceCsv(
+            monthStr = currentMonthStr,
+            companyName = uiState.companyProfile.companyName,
+            employees = uiState.employees,
+            attendanceList = uiState.allAttendance
+        )
+        val csvFileName = "AlfaGlazing_AttendanceReport_${currentMonthStr.replace("-", "_")}.csv"
+
         ExportReportDialog(
-            title = "Attendance Sheet Summary",
+            title = "Attendance Sheet ($currentMonthStr)",
             reportText = reportBuilder.toString(),
+            csvContent = csvData,
+            csvFileName = csvFileName,
             onDismiss = { showExportDialog = false }
         )
     }

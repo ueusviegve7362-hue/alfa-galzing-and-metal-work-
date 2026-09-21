@@ -6,8 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.local.AlfaGlazingRepository
 import com.example.data.local.AppDatabase
 import com.example.data.local.entity.*
-import com.example.service.AlfaFcmService
-import com.example.service.FirestoreSyncService
+import com.example.service.AlfaNotificationService
+import com.example.service.GitHubDatabasePayload
+import com.example.service.GitHubSyncService
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -80,7 +81,7 @@ private data class FilteredData(
 class AlfaGlazingViewModel(application: Application) : AndroidViewModel(application) {
 
     private val repository: AlfaGlazingRepository = AlfaGlazingRepository(AppDatabase.getInstance(application))
-    private val firestoreSyncService = FirestoreSyncService(application)
+    private val gitHubSyncService = GitHubSyncService(application)
 
     private val _selectedDate = MutableStateFlow(SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date()))
     private val _selectedMonth = MutableStateFlow(SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date()))
@@ -171,6 +172,71 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = AlfaGlazingUiState()
     )
+
+    init {
+        // On app load, fetch latest data from raw.githubusercontent.com
+        loadDataFromGitHub()
+    }
+
+    fun saveGitHubCredentials(username: String, repo: String, token: String) {
+        gitHubSyncService.saveGitHubConfig(username, repo, token)
+        _toastMessage.value = "GitHub configuration saved!"
+        loadDataFromGitHub()
+    }
+
+    fun loadDataFromGitHub(onComplete: (() -> Unit)? = null) {
+        viewModelScope.launch {
+            _isRefreshing.value = true
+            try {
+                val payload = gitHubSyncService.fetchLatestData()
+                if (payload != null) {
+                    if (payload.employees.isNotEmpty()) {
+                        payload.employees.forEach { repository.insertOrUpdateEmployee(it) }
+                    }
+                    if (payload.attendance.isNotEmpty()) {
+                        repository.markBulkAttendance(payload.attendance)
+                    }
+                    if (payload.advances.isNotEmpty()) {
+                        payload.advances.forEach { repository.addAdvancePayment(it) }
+                    }
+                    if (payload.salarySlips.isNotEmpty()) {
+                        payload.salarySlips.forEach { repository.saveSalarySlip(it) }
+                    }
+                    payload.companyProfile?.let { repository.updateCompanyProfile(it) }
+                    _toastMessage.value = "Synced with GitHub data.json"
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("AlfaGlazingViewModel", "Error fetching data from GitHub: ${e.message}")
+            } finally {
+                _isRefreshing.value = false
+                onComplete?.invoke()
+            }
+        }
+    }
+
+    private fun pushFullDatabaseToGitHub(commitMsg: String = "Update data.json") {
+        viewModelScope.launch {
+            val state = uiState.value
+            val payload = GitHubDatabasePayload(
+                employees = state.employees,
+                attendance = state.allAttendance,
+                advances = state.allAdvances,
+                salarySlips = state.salarySlips,
+                companyProfile = state.companyProfile,
+                lastUpdatedTimestamp = System.currentTimeMillis()
+            )
+            gitHubSyncService.updateGitHubData(
+                payload = payload,
+                commitMessage = commitMsg,
+                onSuccess = {
+                    _toastMessage.value = "GitHub: data.json synced!"
+                },
+                onError = { err ->
+                    _toastMessage.value = err
+                }
+            )
+        }
+    }
 
     fun setSelectedDate(dateStr: String) {
         _selectedDate.value = dateStr
@@ -279,17 +345,15 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 timestamp = System.currentTimeMillis()
             )
             repository.markAttendance(record)
-            firestoreSyncService.syncAttendanceToFirestore(record) { err ->
-                _toastMessage.value = err
-            }
+            pushFullDatabaseToGitHub("Punch in attendance for $todayStr")
             val emp = uiState.value.employees.find { it.id == employeeId }
             val empName = emp?.name ?: "Worker #$employeeId"
             val timeStr = java.text.SimpleDateFormat("hh:mm a", java.util.Locale.getDefault()).format(java.util.Date())
             val siteName = uiState.value.companyProfile.jobSiteAddressName.ifBlank { "Job Site" }
             _toastMessage.value = "Punched In Successfully at $timeStr! Marked $status ($empName)"
 
-            // Send real-time FCM Notification to Admin
-            AlfaFcmService.sendPunchInAdminNotification(
+            // Send local notification alert
+            AlfaNotificationService.sendPunchInAdminNotification(
                 context = getApplication(),
                 employeeName = empName,
                 timeStr = timeStr,
@@ -303,31 +367,15 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             _isPunchInSyncing.value = true
             try {
-                val currentDate = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date())
                 val matchedEmp = if (employeeId != null) {
                     uiState.value.employees.find { it.id == employeeId }
                 } else {
                     uiState.value.employees.firstOrNull()
                 }
-                val empName = matchedEmp?.name ?: "Salim (Alfa Glazing)"
                 val effectiveEmpId = matchedEmp?.id ?: 1L
 
-                // 1. Immediately record in local database/state for UI update
+                // Record in local database/state for UI update and sync to GitHub
                 employeeSelfPunchIn(effectiveEmpId, "PRESENT")
-
-                // 2. Trigger simulated Firestore write operation with live status toast
-                _toastMessage.value = "Executing simulated Firestore write for $currentDate..."
-                firestoreSyncService.simulateFirestorePunchInWrite(
-                    employeeName = empName,
-                    dateString = currentDate,
-                    status = "PRESENT",
-                    onSuccess = {
-                        _toastMessage.value = "Firestore Sync: Punch-In record successfully written for $empName on $currentDate"
-                    },
-                    onErrorCallback = { err ->
-                        _toastMessage.value = err
-                    }
-                )
             } finally {
                 _isPunchInSyncing.value = false
             }
@@ -338,7 +386,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             val emp = uiState.value.employees.find { it.id == employeeId }
             val empName = emp?.name ?: "Employee"
-            AlfaFcmService.sendShiftReminderNotification(
+            AlfaNotificationService.sendShiftReminderNotification(
                 context = getApplication(),
                 employeeName = empName
             )
@@ -364,9 +412,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 timestamp = System.currentTimeMillis()
             )
             repository.markAttendance(record)
-            firestoreSyncService.syncAttendanceToFirestore(record) { err ->
-                _toastMessage.value = err
-            }
+            pushFullDatabaseToGitHub("Update attendance on $dateStr")
         }
     }
 
@@ -391,11 +437,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 )
             }
             repository.markBulkAttendance(listToSave)
-            listToSave.forEach { rec ->
-                firestoreSyncService.syncAttendanceToFirestore(rec) { err ->
-                    _toastMessage.value = err
-                }
-            }
+            pushFullDatabaseToGitHub("Bulk attendance mark $status for $dateStr")
             _toastMessage.value = "All workers marked as $status for $dateStr"
         }
     }
@@ -425,11 +467,8 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 overtimeRatePerHour = overtimeRate,
                 isActive = true
             )
-            val savedId = repository.insertOrUpdateEmployee(emp)
-            val empToSync = emp.copy(id = if (emp.id == 0L) savedId else emp.id)
-            firestoreSyncService.syncEmployeeToFirestore(empToSync) { err ->
-                _toastMessage.value = err
-            }
+            repository.insertOrUpdateEmployee(emp)
+            pushFullDatabaseToGitHub("Save employee ${emp.name}")
             _toastMessage.value = "Employee ${emp.name} saved successfully!"
         }
     }
@@ -510,37 +549,8 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 monthYear = currentMonth
             )
             repository.addAdvancePayment(advance)
-
-            // Sync advance payment to Firestore 'payments' collection
-            val paymentDateStr = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(timestamp))
-            val paymentData: Map<String, Any?> = hashMapOf(
-                "employeeId" to employeeId,
-                "employeeName" to empName,
-                "employeeCode" to empCode,
-                "paymentType" to "ADVANCE",
-                "amount" to cleanAmount,
-                "currency" to uiState.value.companyProfile.currencySymbol,
-                "paymentMethod" to "Cash",
-                "referenceNo" to "",
-                "paymentDate" to paymentDateStr,
-                "monthYear" to currentMonth,
-                "note" to note,
-                "recordedBy" to uiState.value.companyProfile.currentUserRole,
-                "timestamp" to timestamp,
-                "status" to "COMPLETED"
-            )
-
-            val docId = "pay_advance_${employeeId}_${timestamp}"
-            firestoreSyncService.savePaymentToFirestore(
-                paymentData = paymentData,
-                paymentId = docId,
-                onSuccess = {
-                    _toastMessage.value = "Advance of ₹${cleanAmount.toInt()} saved to Firestore 'payments'!"
-                },
-                onErrorCallback = { err ->
-                    _toastMessage.value = err
-                }
-            )
+            pushFullDatabaseToGitHub("Add advance of ₹${cleanAmount.toInt()} for $empName")
+            _toastMessage.value = "Advance of ₹${cleanAmount.toInt()} saved!"
         }
     }
 
@@ -559,7 +569,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
             return
         }
 
-        // Strict numeric validation before saving to Firestore or local database
+        // Strict numeric validation before saving to local database and syncing
         if (amount <= 0.0 || amount.isNaN() || amount.isInfinite() || amount > 10_000_000.0) {
             _toastMessage.value = "Validation Error: Payment amount must be a valid positive number greater than 0"
             return
@@ -570,7 +580,6 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             val emp = uiState.value.employees.find { it.id == employeeId }
             val empName = emp?.name ?: "Worker #$employeeId"
-            val empCode = emp?.employeeCode ?: ""
             val timestamp = System.currentTimeMillis()
 
             // If advance payment, record in local room advance payments for real-time calculation
@@ -611,38 +620,8 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 repository.saveSalarySlip(slip)
             }
 
-            // Save document into Firestore 'payments' collection with validated numeric amount
-            val paymentData: Map<String, Any?> = hashMapOf(
-                "employeeId" to employeeId,
-                "employeeName" to empName,
-                "employeeCode" to empCode,
-                "paymentType" to paymentType.uppercase(),
-                "amount" to cleanAmount,
-                "currency" to uiState.value.companyProfile.currencySymbol,
-                "paymentMethod" to paymentMethod,
-                "referenceNo" to referenceNo,
-                "paymentDate" to paymentDate,
-                "monthYear" to monthYear,
-                "note" to note,
-                "recordedBy" to uiState.value.companyProfile.currentUserRole,
-                "timestamp" to timestamp,
-                "status" to "COMPLETED"
-            )
-
-            val docId = "pay_${paymentType.lowercase()}_${employeeId}_${timestamp}"
-
-            _toastMessage.value = "Saving $paymentType of ₹${cleanAmount.toInt()} for $empName to Firestore..."
-
-            firestoreSyncService.savePaymentToFirestore(
-                paymentData = paymentData,
-                paymentId = docId,
-                onSuccess = {
-                    _toastMessage.value = "Success: $paymentType (₹${cleanAmount.toInt()}) saved to 'payments' collection!"
-                },
-                onErrorCallback = { err ->
-                    _toastMessage.value = err
-                }
-            )
+            pushFullDatabaseToGitHub("Record $paymentType for $empName")
+            _toastMessage.value = "Success: $paymentType (₹${cleanAmount.toInt()}) saved!"
         }
     }
 
@@ -653,9 +632,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         }
         viewModelScope.launch {
             repository.updateCompanyProfile(profile)
-            firestoreSyncService.syncCompanyProfileToFirestore(profile) { err ->
-                _toastMessage.value = err
-            }
+            pushFullDatabaseToGitHub("Update company profile")
             _toastMessage.value = "Company details updated"
         }
     }
@@ -830,57 +807,6 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
     }
 
     fun refreshDashboardDataFromFirestore(onComplete: (() -> Unit)? = null) {
-        if (_isRefreshing.value) return
-        viewModelScope.launch {
-            _isRefreshing.value = true
-            try {
-                // Fetch latest attendance records from Firestore
-                val attendanceFromCloud = firestoreSyncService.fetchAllAttendanceFromFirestore()
-                if (attendanceFromCloud.isNotEmpty()) {
-                    repository.markBulkAttendance(attendanceFromCloud)
-                }
-
-                // Fetch latest payments (salary & advances) from Firestore
-                val paymentsFromCloud = firestoreSyncService.fetchAllPaymentsFromFirestore()
-                if (paymentsFromCloud.isNotEmpty()) {
-                    paymentsFromCloud.forEach { paymentMap ->
-                        try {
-                            val empId = (paymentMap["employeeId"] as? Number)?.toLong() ?: return@forEach
-                            val type = paymentMap["paymentType"] as? String ?: "ADVANCE"
-                            val amount = (paymentMap["amount"] as? Number)?.toDouble() ?: return@forEach
-                            val note = paymentMap["note"] as? String ?: ""
-                            val monthYear = paymentMap["monthYear"] as? String ?: SimpleDateFormat("yyyy-MM", Locale.getDefault()).format(Date())
-                            val timestamp = (paymentMap["timestamp"] as? Number)?.toLong() ?: System.currentTimeMillis()
-
-                            if (type.equals("ADVANCE", ignoreCase = true)) {
-                                val adv = AdvancePaymentEntity(
-                                    employeeId = empId,
-                                    amount = amount,
-                                    dateTimestamp = timestamp,
-                                    note = note,
-                                    monthYear = monthYear
-                                )
-                                repository.addAdvancePayment(adv)
-                            }
-                        } catch (e: Exception) {
-                            android.util.Log.w("AlfaGlazingViewModel", "Error applying payment from Firestore: $e")
-                        }
-                    }
-                }
-
-                val totalSynced = attendanceFromCloud.size + paymentsFromCloud.size
-                if (totalSynced > 0) {
-                    _toastMessage.value = "Dashboard updated: Synced $totalSynced items from Firestore"
-                } else {
-                    _toastMessage.value = "Dashboard up to date with Firestore"
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("AlfaGlazingViewModel", "Error during pull-to-refresh sync", e)
-                _toastMessage.value = "Refresh completed (Offline/Cached data retained)"
-            } finally {
-                _isRefreshing.value = false
-                onComplete?.invoke()
-            }
-        }
+        loadDataFromGitHub(onComplete)
     }
 }

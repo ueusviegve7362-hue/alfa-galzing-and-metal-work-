@@ -241,7 +241,7 @@ fun AttendancePunchInCard(
                         )
                         Spacer(modifier = Modifier.width(10.dp))
                         Text(
-                            text = "Writing to Firestore...",
+                            text = "Syncing Data...",
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = Color.White
