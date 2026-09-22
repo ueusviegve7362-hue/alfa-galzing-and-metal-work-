@@ -65,6 +65,10 @@ class AlfaGlazingRepository(private val database: AppDatabase) {
         return database.advancePaymentDao().insertAdvance(advance)
     }
 
+    suspend fun deleteAdvancePayment(advance: AdvancePaymentEntity) {
+        database.advancePaymentDao().deleteAdvance(advance)
+    }
+
     suspend fun saveSalarySlip(slip: SalarySlipEntity): Long {
         return database.salarySlipDao().insertSalarySlip(slip)
     }

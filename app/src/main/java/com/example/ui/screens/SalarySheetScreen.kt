@@ -29,6 +29,7 @@ import com.example.ui.dialogs.EmployeeSalaryHistoryDialog
 import com.example.ui.dialogs.ExportReportDialog
 import com.example.ui.dialogs.RoleStatusBanner
 import com.example.ui.dialogs.RoleSwitchDialog
+import com.example.ui.dialogs.SalaryCalculationAuditDialog
 import com.example.ui.dialogs.UpdateWageRateDialog
 import com.example.ui.theme.*
 import com.example.ui.viewmodel.AlfaGlazingUiState
@@ -46,9 +47,12 @@ fun SalarySheetScreen(
     onOpenRecordPayment: (employeeId: Long?, defaultType: String) -> Unit = { _, _ -> }
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    var statusFilter by remember { mutableStateOf("ALL") } // "ALL", "PENDING", "PAID"
     var showExportDialog by remember { mutableStateOf(false) }
     var showRoleDialog by remember { mutableStateOf(false) }
+    var showBatchPayDialog by remember { mutableStateOf(false) }
     var selectedPayslipEmp by remember { mutableStateOf<EmployeeSalarySummary?>(null) }
+    var auditCalculationEmp by remember { mutableStateOf<EmployeeSalarySummary?>(null) }
     var singlePayslipToShare by remember { mutableStateOf<EmployeeSalarySummary?>(null) }
     var selectedHistoryEmp by remember { mutableStateOf<EmployeeEntity?>(null) }
     var wageRateEmpToUpdate by remember { mutableStateOf<EmployeeEntity?>(null) }
@@ -59,9 +63,15 @@ fun SalarySheetScreen(
 
     val salarySummaries = viewModel.generateSalarySummaryForMonth(monthStr)
     val filteredSummaries = salarySummaries.filter { summary ->
-        summary.employee.name.contains(searchQuery, ignoreCase = true) ||
+        val matchesSearch = summary.employee.name.contains(searchQuery, ignoreCase = true) ||
                 summary.employee.employeeCode.contains(searchQuery, ignoreCase = true) ||
                 summary.employee.designation.contains(searchQuery, ignoreCase = true)
+        val matchesStatus = when (statusFilter) {
+            "PENDING" -> summary.paymentStatus != "PAID"
+            "PAID" -> summary.paymentStatus == "PAID"
+            else -> true
+        }
+        matchesSearch && matchesStatus
     }
 
     val totalGrossEarned = salarySummaries.sumOf { it.earnedBasicWage + it.overtimePay }
@@ -244,7 +254,75 @@ fun SalarySheetScreen(
                     }
                 }
 
-                Spacer(modifier = Modifier.height(12.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+
+                // Automated Calculation Engine Banner
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)),
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    Icons.Default.Calculate,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = "Automated Calculation Engine",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                            }
+
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                OutlinedButton(
+                                    onClick = { viewModel.recalculateMonthlySalaries(monthStr) },
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                    modifier = Modifier.height(32.dp)
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Recalculate", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                                }
+
+                                if (uiState.isUserAdmin && pendingCount > 0) {
+                                    Button(
+                                        onClick = { showBatchPayDialog = true },
+                                        shape = RoundedCornerShape(8.dp),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        modifier = Modifier.height(32.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = PresentGreen)
+                                    ) {
+                                        Icon(Icons.Default.CheckCircle, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Batch Pay All", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "Formula: (Billable Days × Daily Rate) + (OT Hours × OT Rate) - Advances",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(10.dp))
 
                 OutlinedTextField(
                     value = searchQuery,
@@ -257,6 +335,38 @@ fun SalarySheetScreen(
                         .testTag("salary_search_input"),
                     shape = RoundedCornerShape(10.dp)
                 )
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Status Filter Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    FilterChip(
+                        selected = statusFilter == "ALL",
+                        onClick = { statusFilter = "ALL" },
+                        label = { Text("All (${salarySummaries.size})", fontSize = 12.sp) }
+                    )
+                    FilterChip(
+                        selected = statusFilter == "PENDING",
+                        onClick = { statusFilter = "PENDING" },
+                        label = { Text("Pending ($pendingCount)", fontSize = 12.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = OvertimeAmber.copy(alpha = 0.2f),
+                            selectedLabelColor = OvertimeAmber
+                        )
+                    )
+                    FilterChip(
+                        selected = statusFilter == "PAID",
+                        onClick = { statusFilter = "PAID" },
+                        label = { Text("Paid ($paidCount)", fontSize = 12.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = PresentGreen.copy(alpha = 0.2f),
+                            selectedLabelColor = PresentGreen
+                        )
+                    )
+                }
             }
         }
 
@@ -278,6 +388,9 @@ fun SalarySheetScreen(
                     },
                     onRecordAdvance = {
                         onOpenRecordPayment(item.employee.id, "ADVANCE")
+                    },
+                    onViewCalculation = {
+                        auditCalculationEmp = item
                     },
                     onViewSlip = {
                         selectedPayslipEmp = item
@@ -515,6 +628,98 @@ fun SalarySheetScreen(
             onDismiss = { singlePayslipToShare = null }
         )
     }
+
+    // Step-by-Step Salary Calculation Audit Dialog
+    if (auditCalculationEmp != null) {
+        val auditEmp = auditCalculationEmp!!
+        SalaryCalculationAuditDialog(
+            summary = auditEmp,
+            monthStr = monthStr,
+            uiState = uiState,
+            viewModel = viewModel,
+            onDismiss = { auditCalculationEmp = null },
+            onUpdateWageRate = {
+                val emp = auditEmp.employee
+                auditCalculationEmp = null
+                wageRateEmpToUpdate = emp
+            },
+            onRecordAdvance = {
+                val empId = auditEmp.employee.id
+                auditCalculationEmp = null
+                onOpenRecordAdvance(empId)
+            },
+            onMarkPaid = {
+                val empId = auditEmp.employee.id
+                auditCalculationEmp = null
+                onOpenRecordPayment(empId, "SALARY")
+            }
+        )
+    }
+
+    // Batch Pay Confirmation Dialog
+    if (showBatchPayDialog) {
+        var selectedMethod by remember { mutableStateOf("Bank Transfer") }
+        AlertDialog(
+            onDismissRequest = { showBatchPayDialog = false },
+            icon = {
+                Icon(Icons.Default.Payments, contentDescription = null, tint = PresentGreen, modifier = Modifier.size(32.dp))
+            },
+            title = {
+                Text("Batch Pay Pending Salaries", fontWeight = FontWeight.Bold)
+            },
+            text = {
+                Column {
+                    Text(
+                        "Mark all pending employee salaries as PAID for $monthStr?",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text(
+                        "Pending Workers: $pendingCount",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    Text(
+                        "Total Amount to Pay: $currency${salarySummaries.filter { it.paymentStatus != "PAID" }.sumOf { it.netSalaryPayable }.toInt()}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Text("Payment Method:", style = MaterialTheme.typography.labelMedium)
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        listOf("Bank Transfer", "Cash", "UPI/Cheque").forEach { method ->
+                            FilterChip(
+                                selected = selectedMethod == method,
+                                onClick = { selectedMethod = method },
+                                label = { Text(method, fontSize = 12.sp) }
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.markAllSalariesAsPaid(monthStr, selectedMethod)
+                        showBatchPayDialog = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = PresentGreen)
+                ) {
+                    Text("Confirm Batch Payment")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showBatchPayDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
 }
 
 @Composable
@@ -525,6 +730,7 @@ fun WorkerSalaryCard(
     onMarkPaid: () -> Unit,
     onRecordAdvance: () -> Unit,
     onViewSlip: () -> Unit,
+    onViewCalculation: () -> Unit = {},
     onViewHistory: () -> Unit = {},
     onUpdateWageRate: () -> Unit = {}
 ) {
@@ -588,11 +794,13 @@ fun WorkerSalaryCard(
 
             Spacer(modifier = Modifier.height(10.dp))
 
-            // Work Attendance & Wage calculation stats grid
+            // Work Attendance & Wage calculation stats grid (Clickable to open calculation breakdown)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { onViewCalculation() }
                     .padding(8.dp),
                 horizontalArrangement = Arrangement.SpaceAround
             ) {
@@ -611,13 +819,19 @@ fun WorkerSalaryCard(
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("Days Worked", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("${summary.presentDays}d", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = PresentGreen)
+                    if (summary.halfDays > 0) {
+                        Text("${summary.halfDays} half", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Text("OT Pay", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("$currencySymbol${summary.overtimePay.toInt()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = OvertimeAmber)
+                    if (summary.overtimeHours > 0) {
+                        Text("${summary.overtimeHours}h", fontSize = 9.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                 }
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text("Advance Deducted", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text("Advance", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     Text("$currencySymbol${summary.totalAdvanceDeducted.toInt()}", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Bold, color = AbsentRed)
                 }
             }
@@ -639,47 +853,63 @@ fun WorkerSalaryCard(
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedButton(
+                        onClick = onViewCalculation,
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(34.dp)
+                    ) {
+                        Icon(Icons.Default.Calculate, contentDescription = "Calculation Breakdown", modifier = Modifier.size(15.dp))
+                        Spacer(modifier = Modifier.width(3.dp))
+                        Text("Calc", fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    }
+
                     IconButton(
                         onClick = onUpdateWageRate,
                         enabled = isUserAdmin,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             Icons.Default.AttachMoney,
                             contentDescription = "Update Wage Rate",
-                            tint = if (isUserAdmin) MaterialTheme.colorScheme.primary else Color.Gray
+                            tint = if (isUserAdmin) MaterialTheme.colorScheme.primary else Color.Gray,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
 
                     IconButton(
                         onClick = onViewHistory,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             Icons.Default.History,
                             contentDescription = "View Salary History",
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
 
                     IconButton(
                         onClick = onRecordAdvance,
                         enabled = isUserAdmin,
-                        modifier = Modifier.size(36.dp)
+                        modifier = Modifier.size(34.dp)
                     ) {
                         Icon(
                             Icons.Default.PriceChange,
                             contentDescription = "Record Advance",
-                            tint = if (isUserAdmin) MaterialTheme.colorScheme.primary else Color.Gray
+                            tint = if (isUserAdmin) MaterialTheme.colorScheme.primary else Color.Gray,
+                            modifier = Modifier.size(18.dp)
                         )
                     }
 
                     OutlinedButton(
                         onClick = onViewSlip,
-                        shape = RoundedCornerShape(8.dp)
+                        shape = RoundedCornerShape(8.dp),
+                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                        modifier = Modifier.height(34.dp)
                     ) {
-                        Text("Payslip", fontSize = 12.sp)
+                        Text("Slip", fontSize = 11.sp)
                     }
 
                     if (!isPaid) {
@@ -688,9 +918,12 @@ fun WorkerSalaryCard(
                             enabled = isUserAdmin,
                             colors = ButtonDefaults.buttonColors(containerColor = PresentGreen),
                             shape = RoundedCornerShape(8.dp),
-                            modifier = Modifier.testTag("mark_paid_button")
+                            contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                            modifier = Modifier
+                                .height(34.dp)
+                                .testTag("mark_paid_button")
                         ) {
-                            Text(if (isUserAdmin) "Mark Paid" else "Read-Only", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Text(if (isUserAdmin) "Pay" else "Read", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
                     }
                 }

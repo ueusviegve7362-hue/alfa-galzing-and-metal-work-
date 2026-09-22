@@ -29,7 +29,6 @@ import com.example.R
 import com.example.data.local.entity.EmployeeEntity
 import com.example.ui.components.AttendancePunchInCard
 import com.example.ui.components.EmployeeOneTapPunchCard
-import com.example.ui.components.RealtimeAttendanceFeedCard
 import com.example.ui.dialogs.EmployeeSalaryHistoryDialog
 import com.example.ui.dialogs.ExportReportDialog
 import com.example.ui.dialogs.RoleStatusBanner
@@ -62,6 +61,7 @@ fun HomeScreen(
     val presentCount = todayAttendance.count { it.status == "PRESENT" }
     val halfDayCount = todayAttendance.count { it.status == "HALF_DAY" }
     val absentCount = todayAttendance.count { it.status == "ABSENT" }
+    val leaveCount = todayAttendance.count { it.status == "LEAVE" }
     val unmarkedCount = (uiState.employees.size - todayAttendance.size).coerceAtLeast(0)
     val totalOtHours = todayAttendance.sumOf { it.overtimeHours }
 
@@ -416,15 +416,6 @@ fun HomeScreen(
             }
         }
 
-        // Real-Time Staff Punch Feed
-        item {
-            RealtimeAttendanceFeedCard(
-                allAttendance = uiState.allAttendance,
-                employees = uiState.employees,
-                todayDateStr = dateStr
-            )
-        }
-
         // Attendance Status Banner for Today
         item {
             Card(
@@ -480,16 +471,22 @@ fun HomeScreen(
                             icon = Icons.Default.CheckCircle
                         )
                         AttendanceStatBadge(
-                            label = "Half Day",
-                            count = halfDayCount,
-                            color = HalfDayOrange,
-                            icon = Icons.Default.Schedule
-                        )
-                        AttendanceStatBadge(
                             label = "Absent",
                             count = absentCount,
                             color = AbsentRed,
                             icon = Icons.Default.Cancel
+                        )
+                        AttendanceStatBadge(
+                            label = "Leave",
+                            count = leaveCount,
+                            color = LeavePurple,
+                            icon = Icons.Default.EventBusy
+                        )
+                        AttendanceStatBadge(
+                            label = "Half Day",
+                            count = halfDayCount,
+                            color = HalfDayOrange,
+                            icon = Icons.Default.Schedule
                         )
                         AttendanceStatBadge(
                             label = "Unmarked",
@@ -588,14 +585,28 @@ fun HomeScreen(
                         // Total Advances Given Card
                         Card(
                             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
-                            modifier = Modifier.weight(1f)
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { onNavigateToAdvances() }
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
-                                Text(
-                                    text = "Advances Issued",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = MaterialTheme.colorScheme.onSecondaryContainer
-                                )
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceBetween,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = "Advances Issued",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSecondaryContainer
+                                    )
+                                    Icon(
+                                        Icons.Default.ChevronRight,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
                                     text = "${uiState.companyProfile.currencySymbol}${totalAdvancesThisMonth.toInt()}",

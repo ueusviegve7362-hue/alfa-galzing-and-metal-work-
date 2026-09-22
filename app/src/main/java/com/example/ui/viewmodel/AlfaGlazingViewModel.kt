@@ -17,18 +17,22 @@ import java.util.*
 data class EmployeeSalarySummary(
     val employee: EmployeeEntity,
     val totalDaysInMonth: Int,
-    val presentDays: Double,
-    val absentDays: Int,
-    val halfDays: Int,
-    val leaveDays: Int,
-    val overtimeHours: Double,
+    val presentDays: Double, // Total billable present days: fullPresentDays + (halfDays * 0.5)
+    val fullPresentDays: Int = 0,
+    val absentDays: Int = 0,
+    val halfDays: Int = 0,
+    val leaveDays: Int = 0,
+    val unmarkedDays: Int = 0,
+    val overtimeHours: Double = 0.0,
     val dailyWage: Double,
     val earnedBasicWage: Double,
     val overtimePay: Double,
-    val totalAdvanceDeducted: Double,
-    val bonusAmount: Double,
+    val grossSalary: Double = earnedBasicWage + overtimePay,
+    val totalAdvanceDeducted: Double = 0.0,
+    val bonusAmount: Double = 0.0,
     val netSalaryPayable: Double,
-    val paymentStatus: String = "PENDING"
+    val paymentStatus: String = "PENDING",
+    val attendanceRecords: List<AttendanceEntity> = emptyList()
 )
 
 data class EmployeeMonthSalaryHistory(
@@ -413,6 +417,15 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
             )
             repository.markAttendance(record)
             pushFullDatabaseToGitHub("Update attendance on $dateStr")
+            val empName = uiState.value.employees.find { it.id == employeeId }?.name ?: "Worker"
+            val displayStatus = when (status) {
+                "PRESENT" -> "Present"
+                "ABSENT" -> "Absent"
+                "LEAVE" -> "On Leave"
+                "HALF_DAY" -> "Half Day"
+                else -> status
+            }
+            _toastMessage.value = "$empName marked as $displayStatus for $dateStr"
         }
     }
 
@@ -438,7 +451,14 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
             }
             repository.markBulkAttendance(listToSave)
             pushFullDatabaseToGitHub("Bulk attendance mark $status for $dateStr")
-            _toastMessage.value = "All workers marked as $status for $dateStr"
+            val displayStatus = when (status) {
+                "PRESENT" -> "Present"
+                "ABSENT" -> "Absent"
+                "LEAVE" -> "On Leave"
+                "HALF_DAY" -> "Half Day"
+                else -> status
+            }
+            _toastMessage.value = "All workers marked as $displayStatus for $dateStr"
         }
     }
 
@@ -520,7 +540,12 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
-    fun recordAdvancePayment(employeeId: Long, amount: Double, note: String) {
+    fun recordAdvancePayment(
+        employeeId: Long,
+        amount: Double,
+        note: String,
+        dateTimestamp: Long = System.currentTimeMillis()
+    ) {
         if (!uiState.value.isUserAdmin) {
             _toastMessage.value = "Read-Only Mode: Switch to Admin role to record advances"
             return
@@ -537,20 +562,35 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         viewModelScope.launch {
             val emp = uiState.value.employees.find { it.id == employeeId }
             val empName = emp?.name ?: "Worker #$employeeId"
-            val empCode = emp?.employeeCode ?: ""
-            val currentMonth = _selectedMonth.value
-            val timestamp = System.currentTimeMillis()
+            val monthSdf = SimpleDateFormat("yyyy-MM", Locale.getDefault())
+            val derivedMonth = monthSdf.format(Date(dateTimestamp))
 
             val advance = AdvancePaymentEntity(
                 employeeId = employeeId,
                 amount = cleanAmount,
-                dateTimestamp = timestamp,
+                dateTimestamp = dateTimestamp,
                 note = note,
-                monthYear = currentMonth
+                monthYear = derivedMonth
             )
             repository.addAdvancePayment(advance)
-            pushFullDatabaseToGitHub("Add advance of ₹${cleanAmount.toInt()} for $empName")
-            _toastMessage.value = "Advance of ₹${cleanAmount.toInt()} saved!"
+            val dateDisplaySdf = SimpleDateFormat("dd MMM yyyy", Locale.getDefault())
+            val formattedDate = dateDisplaySdf.format(Date(dateTimestamp))
+            pushFullDatabaseToGitHub("Add advance of ₹${cleanAmount.toInt()} for $empName on $formattedDate")
+            _toastMessage.value = "Advance of ₹${cleanAmount.toInt()} recorded for $empName on $formattedDate"
+        }
+    }
+
+    fun deleteAdvancePayment(advance: AdvancePaymentEntity) {
+        if (!uiState.value.isUserAdmin) {
+            _toastMessage.value = "Read-Only Mode: Switch to Admin role to delete advances"
+            return
+        }
+        viewModelScope.launch {
+            val emp = uiState.value.employees.find { it.id == advance.employeeId }
+            val empName = emp?.name ?: "Worker #${advance.employeeId}"
+            repository.deleteAdvancePayment(advance)
+            pushFullDatabaseToGitHub("Delete advance of ₹${advance.amount.toInt()} for $empName")
+            _toastMessage.value = "Advance of ₹${advance.amount.toInt()} deleted for $empName"
         }
     }
 
@@ -582,6 +622,13 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
             val empName = emp?.name ?: "Worker #$employeeId"
             val timestamp = System.currentTimeMillis()
 
+            val paymentTimestamp = try {
+                val parsed = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).parse(paymentDate)
+                parsed?.time ?: System.currentTimeMillis()
+            } catch (e: Exception) {
+                System.currentTimeMillis()
+            }
+
             // If advance payment, record in local room advance payments for real-time calculation
             if (paymentType.equals("ADVANCE", ignoreCase = true)) {
                 val fullNote = buildString {
@@ -592,7 +639,7 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 val advance = AdvancePaymentEntity(
                     employeeId = employeeId,
                     amount = cleanAmount,
-                    dateTimestamp = timestamp,
+                    dateTimestamp = paymentTimestamp,
                     note = fullNote,
                     monthYear = monthYear
                 )
@@ -643,8 +690,21 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
         val monthAdvances = state.allAdvances.filter { it.monthYear == monthStr }
         val monthSlips = state.salarySlips.filter { it.monthYear == monthStr }
 
+        val totalDaysInMonth = try {
+            val parts = monthStr.split("-")
+            val yr = parts[0].toInt()
+            val mo = parts[1].toInt()
+            val c = Calendar.getInstance()
+            c.set(Calendar.YEAR, yr)
+            c.set(Calendar.MONTH, mo - 1)
+            c.getActualMaximum(Calendar.DAY_OF_MONTH)
+        } catch (e: Exception) {
+            30
+        }
+
         return state.employees.map { emp ->
             val empAtt = monthAttendance.filter { it.employeeId == emp.id }
+            var fullPresentDays = 0
             var presentDays = 0.0
             var absentDays = 0
             var halfDays = 0
@@ -653,7 +713,10 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
 
             empAtt.forEach { att ->
                 when (att.status) {
-                    "PRESENT" -> presentDays += 1.0
+                    "PRESENT" -> {
+                        presentDays += 1.0
+                        fullPresentDays += 1
+                    }
                     "HALF_DAY" -> {
                         presentDays += 0.5
                         halfDays += 1
@@ -664,29 +727,83 @@ class AlfaGlazingViewModel(application: Application) : AndroidViewModel(applicat
                 overtimeHours += att.overtimeHours
             }
 
-            val basicEarned = presentDays * emp.dailyWage
-            val otPay = overtimeHours * emp.overtimeRatePerHour
-            val empAdvances = monthAdvances.filter { it.employeeId == emp.id }.sumOf { it.amount }
+            val totalMarkedDays = fullPresentDays + halfDays + absentDays + leaveDays
+            val unmarkedDays = maxOf(0, totalDaysInMonth - totalMarkedDays)
+
+            val basicEarned = Math.round((presentDays * emp.dailyWage) * 100.0) / 100.0
+            val otPay = Math.round((overtimeHours * emp.overtimeRatePerHour) * 100.0) / 100.0
+            val grossSalary = basicEarned + otPay
+            val empAdvances = Math.round(monthAdvances.filter { it.employeeId == emp.id }.sumOf { it.amount } * 100.0) / 100.0
             val existingSlip = monthSlips.find { it.employeeId == emp.id }
             val bonus = existingSlip?.bonusAmount ?: 0.0
-            val netPayable = (basicEarned + otPay + bonus) - empAdvances
+            val netPayable = Math.max(0.0, Math.round(((grossSalary + bonus) - empAdvances) * 100.0) / 100.0)
 
             EmployeeSalarySummary(
                 employee = emp,
-                totalDaysInMonth = 30,
+                totalDaysInMonth = totalDaysInMonth,
                 presentDays = presentDays,
+                fullPresentDays = fullPresentDays,
                 absentDays = absentDays,
                 halfDays = halfDays,
                 leaveDays = leaveDays,
+                unmarkedDays = unmarkedDays,
                 overtimeHours = overtimeHours,
                 dailyWage = emp.dailyWage,
                 earnedBasicWage = basicEarned,
                 overtimePay = otPay,
+                grossSalary = grossSalary,
                 totalAdvanceDeducted = empAdvances,
                 bonusAmount = bonus,
-                netSalaryPayable = if (netPayable < 0) 0.0 else netPayable,
-                paymentStatus = existingSlip?.paymentStatus ?: "PENDING"
+                netSalaryPayable = netPayable,
+                paymentStatus = existingSlip?.paymentStatus ?: "PENDING",
+                attendanceRecords = empAtt.sortedBy { it.dateString }
             )
+        }
+    }
+
+    fun recalculateMonthlySalaries(monthStr: String = _selectedMonth.value) {
+        val count = uiState.value.employees.size
+        val summaries = generateSalarySummaryForMonth(monthStr)
+        val totalPayroll = summaries.sumOf { it.netSalaryPayable }
+        val currency = uiState.value.companyProfile.currencySymbol
+        _toastMessage.value = "Auto-calculated salaries for $count workers ($currency${totalPayroll.toInt()} total for $monthStr)"
+    }
+
+    fun markAllSalariesAsPaid(monthStr: String = _selectedMonth.value, paymentMethod: String = "BANK_TRANSFER") {
+        if (!uiState.value.isUserAdmin) {
+            _toastMessage.value = "Read-Only Mode: Switch to Admin role to mark salaries as paid"
+            return
+        }
+        val summaries = generateSalarySummaryForMonth(monthStr)
+        viewModelScope.launch {
+            val pendingSummaries = summaries.filter { it.paymentStatus != "PAID" }
+            if (pendingSummaries.isEmpty()) {
+                _toastMessage.value = "All worker salaries for $monthStr are already marked as paid"
+                return@launch
+            }
+            val slips = pendingSummaries.map { s ->
+                SalarySlipEntity(
+                    employeeId = s.employee.id,
+                    monthYear = monthStr,
+                    totalPresentDays = s.presentDays,
+                    totalAbsentDays = s.absentDays,
+                    totalOvertimeHours = s.overtimeHours,
+                    baseWageRate = s.dailyWage,
+                    totalEarnedWage = s.earnedBasicWage,
+                    overtimeAmount = s.overtimePay,
+                    bonusAmount = s.bonusAmount,
+                    totalAdvanceDeducted = s.totalAdvanceDeducted,
+                    netSalaryPaid = s.netSalaryPayable,
+                    paymentStatus = "PAID",
+                    paymentDate = System.currentTimeMillis(),
+                    paymentMethod = paymentMethod
+                )
+            }
+            repository.saveSalarySlipsBulk(slips)
+            val currency = uiState.value.companyProfile.currencySymbol
+            val totalPaid = pendingSummaries.sumOf { it.netSalaryPayable }
+            pushFullDatabaseToGitHub("Batch mark ${pendingSummaries.size} salaries paid for $monthStr ($currency${totalPaid.toInt()})")
+            _toastMessage.value = "Marked ${pendingSummaries.size} salaries as PAID ($currency${totalPaid.toInt()})"
         }
     }
 

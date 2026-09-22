@@ -1,40 +1,82 @@
 package com.example.ui.dialogs
 
+import android.app.DatePickerDialog
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.CloudUpload
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.PriceChange
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.data.local.entity.AdvancePaymentEntity
 import com.example.data.local.entity.EmployeeEntity
+import com.example.ui.theme.AbsentRed
 import com.example.ui.theme.GlazingBluePrimary
-import java.util.Locale
+import com.example.ui.theme.PresentGreen
+import java.text.SimpleDateFormat
+import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun RecordAdvanceDialog(
     employees: List<EmployeeEntity>,
+    allAdvances: List<AdvancePaymentEntity> = emptyList(),
     preselectedEmployeeId: Long? = null,
+    currencySymbol: String = "₹",
     onDismiss: () -> Unit,
-    onSave: (employeeId: Long, amount: Double, note: String) -> Unit
+    onSave: (employeeId: Long, amount: Double, note: String, dateTimestamp: Long) -> Unit
 ) {
-    var selectedEmpId by remember { mutableStateOf(preselectedEmployeeId ?: employees.firstOrNull()?.id ?: 0L) }
+    val context = LocalContext.current
+    var selectedEmpId by remember {
+        mutableStateOf(preselectedEmployeeId ?: employees.firstOrNull()?.id ?: 0L)
+    }
     var amountText by remember { mutableStateOf("1000") }
     var noteText by remember { mutableStateOf("") }
+    var selectedPaymentMethod by remember { mutableStateOf("Cash") }
     var isEmpDropdownExpanded by remember { mutableStateOf(false) }
+
+    // Date state
+    var selectedDateCalendar by remember { mutableStateOf(Calendar.getInstance()) }
+    val dateDisplaySdf = remember { SimpleDateFormat("EEEE, dd MMM yyyy", Locale.getDefault()) }
+    val formattedDateText = remember(selectedDateCalendar.timeInMillis) {
+        dateDisplaySdf.format(selectedDateCalendar.time)
+    }
+
+    val datePickerDialog = remember {
+        DatePickerDialog(
+            context,
+            { _, year, month, dayOfMonth ->
+                val newCal = Calendar.getInstance()
+                newCal.set(year, month, dayOfMonth)
+                // preserve current time of day
+                val now = Calendar.getInstance()
+                newCal.set(Calendar.HOUR_OF_DAY, now.get(Calendar.HOUR_OF_DAY))
+                newCal.set(Calendar.MINUTE, now.get(Calendar.MINUTE))
+                selectedDateCalendar = newCal
+            },
+            selectedDateCalendar.get(Calendar.YEAR),
+            selectedDateCalendar.get(Calendar.MONTH),
+            selectedDateCalendar.get(Calendar.DAY_OF_MONTH)
+        )
+    }
 
     var hasAttemptedSubmit by remember { mutableStateOf(false) }
     var isAmountTouched by remember { mutableStateOf(false) }
@@ -67,10 +109,10 @@ fun RecordAdvanceDialog(
             return "Amount must be a finite number"
         }
         if (parsed <= 0.0) {
-            return "Amount must be greater than 0 (positive numeric value)"
+            return "Amount must be greater than 0"
         }
         if (parsed > 10_000_000.0) {
-            return "Amount exceeds maximum limit (₹10,000,000)"
+            return "Amount exceeds maximum limit ($currencySymbol 10,000,000)"
         }
         return null
     }
@@ -82,6 +124,24 @@ fun RecordAdvanceDialog(
 
     val selectedEmp = employees.find { it.id == selectedEmpId } ?: employees.firstOrNull()
 
+    // Calculate existing advances for selected employee
+    val existingEmpAdvances = remember(selectedEmpId, allAdvances) {
+        allAdvances.filter { it.employeeId == selectedEmpId }
+    }
+    val existingTotalAdvance = remember(existingEmpAdvances) {
+        existingEmpAdvances.sumOf { it.amount }
+    }
+
+    val quickAmounts = listOf(500, 1000, 2000, 5000)
+    val quickReasons = listOf(
+        "Weekly Advance",
+        "Medical / Emergency",
+        "Festival Advance",
+        "Family Support",
+        "Travel / Site Food",
+        "Personal Loan"
+    )
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
@@ -91,14 +151,15 @@ fun RecordAdvanceDialog(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(40.dp)
-                        .background(GlazingBluePrimary.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
+                        .size(42.dp)
+                        .background(AbsentRed.copy(alpha = 0.12f), RoundedCornerShape(10.dp)),
                     contentAlignment = Alignment.Center
                 ) {
                     Icon(
                         imageVector = Icons.Default.PriceChange,
                         contentDescription = null,
-                        tint = GlazingBluePrimary
+                        tint = AbsentRed,
+                        modifier = Modifier.size(24.dp)
                     )
                 }
                 Column {
@@ -108,7 +169,7 @@ fun RecordAdvanceDialog(
                         fontWeight = FontWeight.Bold
                     )
                     Text(
-                        text = "Saves to Firestore 'payments' & local records",
+                        text = "Link advance payment with date & employee",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -119,44 +180,23 @@ fun RecordAdvanceDialog(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .verticalScroll(rememberScrollState())
                     .padding(top = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                // Cloud Sync Notice Banner
-                Surface(
-                    shape = RoundedCornerShape(10.dp),
-                    color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f),
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Row(
-                        modifier = Modifier.padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.CloudUpload,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = "Advance Payment • Cloud Firestore Synced",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    }
-                }
-
+                // 1. Employee Selection & Status Info
                 ExposedDropdownMenuBox(
                     expanded = isEmpDropdownExpanded,
                     onExpandedChange = { isEmpDropdownExpanded = !isEmpDropdownExpanded }
                 ) {
                     OutlinedTextField(
-                        value = "${selectedEmp?.name ?: "Select"} (${selectedEmp?.employeeCode ?: ""})",
+                        value = "${selectedEmp?.name ?: "Select Worker"} (${selectedEmp?.employeeCode ?: ""})",
                         onValueChange = {},
                         readOnly = true,
-                        label = { Text("Worker / Labor *") },
+                        label = { Text("Link to Employee *") },
+                        leadingIcon = {
+                            Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                        },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = isEmpDropdownExpanded) },
                         modifier = Modifier
                             .fillMaxWidth()
@@ -169,7 +209,31 @@ fun RecordAdvanceDialog(
                     ) {
                         employees.forEach { emp ->
                             DropdownMenuItem(
-                                text = { Text("${emp.name} (${emp.employeeCode}) - ${emp.designation}") },
+                                leadingIcon = {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(32.dp)
+                                            .clip(CircleShape)
+                                            .background(MaterialTheme.colorScheme.primaryContainer),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            emp.name.take(1).uppercase(),
+                                            fontWeight = FontWeight.Bold,
+                                            fontSize = 12.sp
+                                        )
+                                    }
+                                },
+                                text = {
+                                    Column {
+                                        Text(emp.name, fontWeight = FontWeight.Bold)
+                                        Text(
+                                            "${emp.employeeCode} • ${emp.designation} (Wage: $currencySymbol${emp.dailyWage.toInt()}/day)",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                },
                                 onClick = {
                                     selectedEmpId = emp.id
                                     isEmpDropdownExpanded = false
@@ -179,19 +243,96 @@ fun RecordAdvanceDialog(
                     }
                 }
 
-                // Advance Amount with Validation
+                // Employee Quick Stats Pill (Wage & Current Advances)
+                selectedEmp?.let { emp ->
+                    Surface(
+                        shape = RoundedCornerShape(8.dp),
+                        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Daily Wage: $currencySymbol${emp.dailyWage.toInt()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Text(
+                                text = "Total Advances Taken: $currencySymbol${existingTotalAdvance.toInt()}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.Bold,
+                                color = if (existingTotalAdvance > 0) AbsentRed else PresentGreen
+                            )
+                        }
+                    }
+                }
+
+                // 2. Payment Date Picker
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                    color = MaterialTheme.colorScheme.surface,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { datePickerDialog.show() }
+                        .testTag("advance_date_picker_button")
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                Icons.Default.CalendarToday,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(10.dp))
+                            Column {
+                                Text(
+                                    text = "Payment Date *",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Text(
+                                    text = formattedDateText,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                        Icon(
+                            Icons.Default.EditCalendar,
+                            contentDescription = "Change Date",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
+
+                // 3. Advance Amount Field with validation
                 OutlinedTextField(
                     value = amountText,
                     onValueChange = { input ->
                         isAmountTouched = true
                         amountText = sanitizeNumericInput(input)
                     },
-                    label = { Text("Advance Amount (₹) *") },
+                    label = { Text("Advance Amount ($currencySymbol) *") },
                     leadingIcon = {
                         Text(
-                            text = "₹",
+                            text = currencySymbol,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
+                            fontSize = 18.sp,
                             modifier = Modifier.padding(start = 12.dp, end = 4.dp),
                             color = if (showAmountError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                         )
@@ -207,7 +348,7 @@ fun RecordAdvanceDialog(
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
                                 contentDescription = "Valid Amount",
-                                tint = Color(0xFF2E7D32)
+                                tint = PresentGreen
                             )
                         }
                     },
@@ -223,17 +364,12 @@ fun RecordAdvanceDialog(
                             val parsed = amountText.toDoubleOrNull()
                             if (parsed != null) {
                                 Text(
-                                    text = "✓ Valid numeric value: ₹${String.format(Locale.getDefault(), "%,.2f", parsed)} to Firestore",
-                                    color = Color(0xFF2E7D32),
+                                    text = "✓ $currencySymbol${String.format(Locale.getDefault(), "%,.2f", parsed)} will be debited as advance",
+                                    color = PresentGreen,
                                     style = MaterialTheme.typography.bodySmall,
                                     fontWeight = FontWeight.Medium
                                 )
                             }
-                        } else {
-                            Text(
-                                text = "Only valid positive numbers accepted (e.g. 1000 or 2500.50)",
-                                style = MaterialTheme.typography.bodySmall
-                            )
                         }
                     },
                     isError = showAmountError,
@@ -245,11 +381,76 @@ fun RecordAdvanceDialog(
                     shape = RoundedCornerShape(12.dp)
                 )
 
+                // Quick Increment Amount Chips
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickAmounts.forEach { amt ->
+                        SuggestionChip(
+                            onClick = {
+                                isAmountTouched = true
+                                val current = amountText.toDoubleOrNull() ?: 0.0
+                                amountText = (current + amt).toInt().toString()
+                            },
+                            label = { Text("+$currencySymbol$amt", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // 4. Payment Method Selection
+                Text(
+                    text = "Payment Mode:",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    listOf("Cash", "UPI", "Bank Transfer").forEach { method ->
+                        val isSelected = selectedPaymentMethod == method
+                        FilterChip(
+                            selected = isSelected,
+                            onClick = { selectedPaymentMethod = method },
+                            label = { Text(method, fontSize = 12.sp) },
+                            leadingIcon = {
+                                if (isSelected) {
+                                    Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(14.dp))
+                                }
+                            },
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                }
+
+                // 5. Reason / Note Field with Quick Tags
+                Text(
+                    text = "Reason / Purpose (Optional):",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold
+                )
+                FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    quickReasons.forEach { reason ->
+                        val isSelected = noteText.contains(reason, ignoreCase = true)
+                        SuggestionChip(
+                            onClick = {
+                                noteText = if (noteText.isBlank()) reason else "$noteText - $reason"
+                            },
+                            label = { Text(reason, fontSize = 11.sp) }
+                        )
+                    }
+                }
+
                 OutlinedTextField(
                     value = noteText,
                     onValueChange = { noteText = it },
-                    label = { Text("Reason / Note (Optional)") },
-                    placeholder = { Text("e.g. Medical emergency, Festival cash") },
+                    label = { Text("Note / Description") },
+                    placeholder = { Text("e.g. Festival advance, emergency medical aid...") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(12.dp)
@@ -264,17 +465,24 @@ fun RecordAdvanceDialog(
                     val parsedAmt = amountText.toDoubleOrNull()
                     if (isAmountValid && parsedAmt != null && parsedAmt > 0 && isEmpValid) {
                         val cleanAmount = Math.round(parsedAmt * 100.0) / 100.0
-                        onSave(selectedEmpId, cleanAmount, noteText.trim())
+                        val combinedNote = buildString {
+                            if (noteText.isNotBlank()) append(noteText.trim())
+                            if (selectedPaymentMethod.isNotBlank()) {
+                                if (isNotEmpty()) append(" • ")
+                                append(selectedPaymentMethod)
+                            }
+                        }
+                        onSave(selectedEmpId, cleanAmount, combinedNote, selectedDateCalendar.timeInMillis)
                     }
                 },
                 enabled = isAmountValid && isEmpValid,
                 modifier = Modifier.testTag("save_advance_button"),
                 shape = RoundedCornerShape(10.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = GlazingBluePrimary)
+                colors = ButtonDefaults.buttonColors(containerColor = AbsentRed)
             ) {
-                Icon(Icons.Default.CloudUpload, contentDescription = null, modifier = Modifier.size(18.dp))
+                Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(6.dp))
-                Text("Save Advance", fontWeight = FontWeight.Bold)
+                Text("Record Advance", fontWeight = FontWeight.Bold)
             }
         },
         dismissButton = {

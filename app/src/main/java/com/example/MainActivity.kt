@@ -255,13 +255,15 @@ fun MainAlfaGlazingApp(
             if (showRecordAdvanceDialog && uiState.employees.isNotEmpty()) {
                 RecordAdvanceDialog(
                     employees = uiState.employees,
+                    allAdvances = uiState.allAdvances,
                     preselectedEmployeeId = advancePreselectedEmpId,
+                    currencySymbol = uiState.companyProfile.currencySymbol,
                     onDismiss = {
                         showRecordAdvanceDialog = false
                         advancePreselectedEmpId = null
                     },
-                    onSave = { empId, amount, note ->
-                        viewModel.recordAdvancePayment(empId, amount, note)
+                    onSave = { empId, amount, note, dateTimestamp ->
+                        viewModel.recordAdvancePayment(empId, amount, note, dateTimestamp)
                         showRecordAdvanceDialog = false
                         advancePreselectedEmpId = null
                     }
